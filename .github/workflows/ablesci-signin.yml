@@ -1,0 +1,30 @@
+name: AbleSci Daily Sign-In
+
+on:
+  schedule:
+    # Runs at 08:00 CST (00:00 UTC) every day
+    - cron: "0 0 * * *"
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  signin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run sign-in script
+        env:
+          ABLESCI_EMAIL: ${{ secrets.ABLESCI_EMAIL }}
+          ABLESCI_PASSWORD: ${{ secrets.ABLESCI_PASSWORD }}
+        run: |
+          python ablesci_signin.py
