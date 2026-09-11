@@ -70,6 +70,25 @@ ERROR = "error"      # 网络/解析等异常
 
 
 # ------------------------------------------------------------------- 工具
+def read_env(name: str, *, strip_whitespace: bool) -> str:
+    """读取环境变量并清理污染字符。
+
+    踩过的坑：在 Windows PowerShell 5.1 下用
+        echo "value" | gh secret set NAME
+    写入 Secret，值会被混入 UTF-8 BOM(\\uFEFF) 和尾随 CRLF。存进仓库后
+    完全看不出来（Secret 不可读、掩码后只差一个不可见字符），但登录会一直
+    报「邮箱或密码错误」，极难排查。
+
+    这里统一清理：
+      - BOM 一律去掉；
+      - 邮箱额外去掉首尾空白；
+      - 密码只去掉首尾 CR/LF，避免误伤本身以空格开头或结尾的密码。
+    """
+    raw = os.environ.get(name) or ""
+    cleaned = raw.replace("\ufeff", "").strip("\r\n")
+    return cleaned.strip() if strip_whitespace else cleaned
+
+
 def mask_email(email: str) -> str:
     """打码邮箱，避免公开仓库的 Actions 日志泄露账号。"""
     if not email or "@" not in email:
@@ -132,9 +151,9 @@ def collect_accounts() -> list[Account]:
     seen: set[str] = set()
 
     for i in range(1, MAX_ACCOUNT_SLOTS + 1):
-        email = (os.environ.get(f"ABLESCI_{i}_EMAIL") or "").strip()
-        password = os.environ.get(f"ABLESCI_{i}_PASSWORD") or ""
-        name = (os.environ.get(f"ABLESCI_{i}_NAME") or "").strip()
+        email = read_env(f"ABLESCI_{i}_EMAIL", strip_whitespace=True)
+        password = read_env(f"ABLESCI_{i}_PASSWORD", strip_whitespace=False)
+        name = read_env(f"ABLESCI_{i}_NAME", strip_whitespace=True)
         if not email and not password:
             continue
         if not email or not password:
@@ -146,8 +165,8 @@ def collect_accounts() -> list[Account]:
         accounts.append(Account(name or f"账号{i}", email, password))
 
     # 旧的单账号写法，保持向后兼容
-    email = (os.environ.get("ABLESCI_EMAIL") or "").strip()
-    password = os.environ.get("ABLESCI_PASSWORD") or ""
+    email = read_env("ABLESCI_EMAIL", strip_whitespace=True)
+    password = read_env("ABLESCI_PASSWORD", strip_whitespace=False)
     if email and password and email not in seen:
         accounts.append(Account("默认账号", email, password))
 

@@ -155,6 +155,35 @@ Secret 无法查看，只能覆盖。
 </details>
 
 <details>
+<summary><b>明明密码是对的，却一直报「邮箱或密码错误」？</b></summary>
+
+多半是 Secret 的值里混进了**不可见字符**。最容易踩的是在 Windows
+PowerShell 5.1 下这样写 Secret：
+
+```powershell
+$email | gh secret set ABLESCI_1_EMAIL    # ❌ 会混入 BOM 和换行
+```
+
+PowerShell 5.1 通过管道向原生程序传字符串时，会自动加上 UTF-8 BOM
+（`EF BB BF`）和尾随 CRLF。实际存进去的值变成了
+`\uFEFF2892447010@qq.com\r\n` —— 而 Secret 不可查看，掩码输出后只差一个
+看不见的字符，排查起来非常痛苦（症状就是"密码明明没错却登不上"）。
+
+**正确做法**（任选其一）：
+
+1. **用 GitHub 网页界面添加** —— 点 `New repository secret` 粘贴，
+   注意别带入多余的换行；
+2. **命令行改用 `--body`**，值走参数而不是管道：
+
+   ```powershell
+   gh secret set ABLESCI_1_EMAIL --body 'you@example.com'
+   ```
+
+> 本脚本已内置防御：会自动去掉值里的 BOM 和首尾 CR/LF。
+> 但密码**首尾的空格会被保留**，以免误伤真的以空格开头/结尾的密码。
+</details>
+
+<details>
 <summary><b>站点又改版导致脚本失效怎么办？</b></summary>
 
 workflow 里有一个**「站点自检」**步骤，它不登录、只验证能否抓到 CSRF token。
