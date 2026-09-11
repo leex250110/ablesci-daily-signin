@@ -96,6 +96,16 @@ def parse_json(resp):
         return {"code": -1, "msg": f"非 JSON 响应 (HTTP {resp.status_code}): {snippet}"}
 
 
+def clean_already_message(msg: str) -> str:
+    """站点原文类似「签到失败，您今天已于 [13:45:52] 签到。」
+
+    这是"今天已经签过"的正常情况，但自带「失败」二字容易被误读成出错，
+    这里把前缀去掉，只保留有用信息（含签到时间）。
+    """
+    cleaned = re.sub(r"^签到失败[，,、:：]?\s*", "", msg or "").strip()
+    return cleaned or "今天已经签到过了"
+
+
 @dataclass
 class Account:
     label: str
@@ -253,7 +263,9 @@ def run_account(account: Account, max_attempts: int = 2) -> Outcome:
                 last = Outcome(account, ERROR, f"登录态未保持：{sign_msg}")
                 continue
             if "已" in sign_msg:
-                return Outcome(account, ALREADY, sign_msg, points, streak)
+                return Outcome(
+                    account, ALREADY, clean_already_message(sign_msg), points, streak
+                )
             return Outcome(
                 account, FAILED, f"签到失败：{sign_msg or '未知错误'}", points, streak
             )
