@@ -45,6 +45,16 @@ jobs:
       ABLESCI_EMAIL: ${{ secrets.ABLESCI_EMAIL }}
       ABLESCI_PASSWORD: ${{ secrets.ABLESCI_PASSWORD }}
 
+      # ---- 邮件通知（可选，不配置则完全跳过，不影响签到）----
+      # 注意：GitHub Actions 跑在 Azure 上，出站 25 端口被封锁，
+      # 必须用 465(SSL) 或 587(STARTTLS)。QQ 邮箱填 smtp.qq.com:465。
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}   # QQ 邮箱填「授权码」，不是登录密码
+      MAIL_TO: ${{ secrets.MAIL_TO }}       # 多个收件人用逗号分隔；留空则发给自己
+      MAIL_WHEN: ${{ secrets.MAIL_WHEN }}   # always / failure / never
+
     steps:
       - name: 拉取仓库
         uses: actions/checkout@v4

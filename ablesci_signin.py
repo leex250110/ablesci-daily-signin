@@ -22,12 +22,16 @@ AbleSci.com 每日自动签到 —— 多账号版
 
 from __future__ import annotations
 
+import html
 import os
 import random
 import re
+import smtplib
 import sys
 import time
 from dataclasses import dataclass
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 
 import requests
 
@@ -425,6 +429,163 @@ def apply_jitter() -> None:
     time.sleep(wait)
 
 
+# ------------------------------------------------------------ 邮件通知
+# 用标准库 smtplib 发信，不引入任何额外依赖。
+#
+# ⚠️ 关键坑：GitHub Actions 跑在 Azure 上，Azure 出于 IP 信誉考虑封锁了
+# 出站 25 端口，因此必须使用 465(SSL) 或 587(STARTTLS)。
+# 「本地用 25 端口发得出去，换到 Actions 就失败」基本都是这个原因。
+
+MAIL_WHEN_VALUES = ("always", "failure", "never")
+
+
+def mail_config() -> dict | None:
+    """读取邮件配置。三个必填项不齐时返回 None（视为未启用）。"""
+    host = read_env("SMTP_HOST", strip_whitespace=True)
+    user = read_env("SMTP_USER", strip_whitespace=True)
+    password = read_env("SMTP_PASS", strip_whitespace=False)
+
+    missing = [
+        name
+        for name, value in (("SMTP_HOST", host), ("SMTP_USER", user), ("SMTP_PASS", password))
+        if not value
+    ]
+    if missing:
+        if len(missing) < 3:  # 配了一部分才算"配置错误"，全空是正常的
+            print(f"⚠️  邮件配置不完整，缺少 {'、'.join(missing)}，已跳过邮件通知")
+        return None
+
+    port_raw = read_env("SMTP_PORT", strip_whitespace=True)
+    try:
+        port = int(port_raw) if port_raw else 465
+    except ValueError:
+        print(f"⚠️  SMTP_PORT 不是整数（{port_raw!r}），已回退到 465")
+        port = 465
+
+    to_raw = read_env("MAIL_TO", strip_whitespace=True)
+    recipients = [a.strip() for a in to_raw.replace(";", ",").split(",") if a.strip()]
+    if not recipients:
+        recipients = [user]
+
+    when = (read_env("MAIL_WHEN", strip_whitespace=True) or "always").lower()
+    if when not in MAIL_WHEN_VALUES:
+        print(f"⚠️  MAIL_WHEN 取值无效（{when!r}），已回退到 always")
+        when = "always"
+
+    return {
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
+        "recipients": recipients,
+        "when": when,
+    }
+
+
+def build_subject(outcomes: list[Outcome]) -> str:
+    total = len(outcomes)
+    ok = sum(1 for o in outcomes if o.status in (OK, ALREADY))
+    stamp = time.strftime("%m-%d %H:%M")
+    if ok == total:
+        return f"✅ AbleSci 签到成功 {ok}/{total}（{stamp}）"
+    return f"❌ AbleSci 签到异常 {total - ok}/{total}（{stamp}）"
+
+
+def build_bodies(outcomes: list[Outcome]) -> tuple[str, str]:
+    """返回 (纯文本, HTML) 两份正文。"""
+    lines = ["AbleSci 每日签到结果", "=" * 34, ""]
+    for o in outcomes:
+        lines.append(
+            f"{STATUS_ICON.get(o.status, '?')} {o.account.display}"
+            f" —— {STATUS_TEXT.get(o.status, o.status)}"
+        )
+        lines.append(f"   {o.message}")
+        if o.points is not None:
+            lines.append(f"   当前积分：{o.points}")
+        if o.streak is not None:
+            lines.append(f"   连续签到：{o.streak} 天")
+        lines.append("")
+    text_body = "\n".join(lines)
+
+    cells = []
+    for o in outcomes:
+        cells.append(
+            "<tr>"
+            f'<td style="padding:8px;border-bottom:1px solid #eee">{html.escape(o.account.display)}</td>'
+            f'<td style="padding:8px;border-bottom:1px solid #eee;white-space:nowrap">'
+            f'{STATUS_ICON.get(o.status, "?")} {html.escape(STATUS_TEXT.get(o.status, o.status))}</td>'
+            f'<td style="padding:8px;border-bottom:1px solid #eee">{html.escape(o.message)}</td>'
+            f'<td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{html.escape(o.points or "-")}</td>'
+            f'<td style="padding:8px;border-bottom:1px solid #eee;text-align:right">{html.escape(o.streak or "-")}</td>'
+            "</tr>"
+        )
+    html_body = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,'
+        '\'Helvetica Neue\',Arial,\'PingFang SC\',\'Microsoft YaHei\',sans-serif;color:#222">'
+        f'<h2 style="margin:0 0 4px">{html.escape(build_subject(outcomes))}</h2>'
+        '<p style="color:#888;margin:0 0 16px;font-size:13px">由 GitHub Actions 自动发送</p>'
+        '<table style="border-collapse:collapse;font-size:14px">'
+        '<thead><tr style="background:#f6f8fa">'
+        '<th style="padding:8px;text-align:left">账号</th>'
+        '<th style="padding:8px;text-align:left">状态</th>'
+        '<th style="padding:8px;text-align:left">说明</th>'
+        '<th style="padding:8px;text-align:right">积分</th>'
+        '<th style="padding:8px;text-align:right">连签</th>'
+        "</tr></thead><tbody>"
+        + "".join(cells)
+        + "</tbody></table></div>"
+    )
+    return text_body, html_body
+
+
+def send_mail(outcomes: list[Outcome]) -> None:
+    """发送签到结果邮件。任何失败都只告警，不影响签到本身的退出码。"""
+    cfg = mail_config()
+    if cfg is None:
+        return
+
+    if cfg["when"] == "never":
+        print("（MAIL_WHEN=never，已跳过邮件通知）")
+        return
+
+    failed = [o for o in outcomes if o.status in (FAILED, CAPTCHA, ERROR)]
+    if cfg["when"] == "failure" and not failed:
+        print("（MAIL_WHEN=failure 且本次全部成功，已跳过邮件通知）")
+        return
+
+    subject = build_subject(outcomes)
+    text_body, html_body = build_bodies(outcomes)
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = cfg["user"]
+    message["To"] = ", ".join(cfg["recipients"])
+    message["Date"] = formatdate(localtime=True)
+    message["Message-ID"] = make_msgid()
+    message.set_content(text_body)
+    message.add_alternative(html_body, subtype="html")
+
+    try:
+        if cfg["port"] == 465:
+            with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=30) as server:
+                server.login(cfg["user"], cfg["password"])
+                server.send_message(message)
+        else:
+            # 587 走 STARTTLS；注意 25 端口在 Azure 上是被封锁的
+            with smtplib.SMTP(cfg["host"], cfg["port"], timeout=30) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(cfg["user"], cfg["password"])
+                server.send_message(message)
+    except Exception as exc:  # noqa: BLE001 - 通知失败绝不能让签到任务变红
+        print(f"⚠️  邮件发送失败（不影响签到结果）：{type(exc).__name__}: {exc}")
+        return
+
+    shown = "、".join(mask_email(r) for r in cfg["recipients"])
+    print(f"📧 邮件已发送至 {shown}")
+
+
 # ------------------------------------------------------------------ main
 def main() -> int:
     if "--check" in sys.argv:
@@ -457,6 +618,7 @@ def main() -> int:
 
     print_report(outcomes)
     write_step_summary(outcomes)
+    send_mail(outcomes)
 
     bad = [o for o in outcomes if o.status in (FAILED, CAPTCHA, ERROR)]
     if bad:

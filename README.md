@@ -116,6 +116,83 @@ https://github.com/leex250110/ablesci-daily-signin/actions
 
 ---
 
+## 📧 邮件通知（可选，免费）
+
+签到完成后可以自动发一封邮件。**完全免费** —— GitHub Actions 在公开仓库上
+分钟数不限量，邮件走你自己的 QQ/163 邮箱 SMTP，不涉及任何付费服务。
+技术上只用 Python 标准库 `smtplib`，所以 `requirements.txt` 依然只有 `requests`。
+
+### 配置步骤（以 QQ 邮箱为例）
+
+**① 拿授权码**
+
+登录 [QQ 邮箱](https://mail.qq.com) → 设置 → 账户 → 找到「IMAP/SMTP 服务」
+→ 开启 → 按提示发短信验证 → 得到一串 **16 位授权码**。
+
+> ⚠️ 要用**授权码**，不是 QQ 邮箱的登录密码。填登录密码会认证失败。
+
+**② 添加 Secrets**
+
+到 [Secrets 页面](https://github.com/leex250110/ablesci-daily-signin/settings/secrets/actions) 添加：
+
+| Name | 值 | 说明 |
+| --- | --- | --- |
+| `SMTP_HOST` | `smtp.qq.com` | 邮件服务器 |
+| `SMTP_PORT` | `465` | **必须 465 或 587**，见下方警告 |
+| `SMTP_USER` | `你的QQ号@qq.com` | 发件邮箱 |
+| `SMTP_PASS` | 16 位授权码 | 不是登录密码 |
+| `MAIL_TO` | 收件邮箱 | 可留空（默认发给自己）；多个用逗号分隔 |
+| `MAIL_WHEN` | `always` | `always` 每次都发 / `failure` 只在失败时发 / `never` 关闭 |
+
+> 不加任何 `SMTP_*` 也能正常跑，脚本会**静默跳过**邮件这步，不影响签到。
+
+**③ 手动 Run 一次**验证能收到邮件。
+
+### ⚠️ 25 端口在 GitHub Actions 上必然失败
+
+GitHub Actions 运行在 Azure 上，**Azure 出于 IP 信誉考虑封锁了出站 25 端口**
+（[微软官方说明](https://learn.microsoft.com/en-au/answers/questions/5818224/outbound-smtp-port-25-blocked)）。
+「本机用 25 端口发得出去、换到 Actions 就失败」基本都是这个原因。
+
+**必须用 465(SSL) 或 587(STARTTLS)。** 常见邮箱配置：
+
+| 邮箱 | `SMTP_HOST` | `SMTP_PORT` | 密码填什么 |
+| --- | --- | --- | --- |
+| QQ 邮箱 | `smtp.qq.com` | `465` | 16 位授权码 |
+| 163 邮箱 | `smtp.163.com` | `465` | 授权码 |
+| Gmail | `smtp.gmail.com` | `465` | 应用专用密码 |
+| Outlook | `smtp.office365.com` | `587` | 账户密码 |
+
+### 邮件长什么样
+
+带一张结果表格（HTML），同时附纯文本版本，主题类似：
+
+```
+✅ AbleSci 签到成功 2/2（09-11 16:40）
+❌ AbleSci 签到异常 1/2（09-11 16:40）
+```
+
+### 几个设计细节
+
+- **发信失败不会把签到任务标记成失败** —— 通知只是附加功能，签到成功就是成功。
+  日志里会打印 `⚠️ 邮件发送失败（不影响签到结果）：...`。
+- **邮箱全程打码**，邮件正文里显示的是 `28***@qq.com`。
+- `MAIL_WHEN=failure` 会让邮件**只在出问题时**才发，日常不打扰 —— 推荐这个，
+  否则每天一封「签到成功」很快就会被你设成垃圾邮件。
+
+### 如果只想要失败提醒
+
+**GitHub 本身对失败的定时任务会给仓库所有者发通知邮件**，
+可在 Settings → Notifications 里调整。所以只关心"哪天挂了"的话，
+不配 `SMTP_*` 也够用；本节的方案主要是为了**成功时也收到确认**。
+
+### 其他免费方案
+
+如果觉得邮件太正式，国内更常用的其实是微信推送（Server酱、PushPlus）或
+Telegram Bot —— 同样是免费的，手机上看更直观。需要的话告诉我，可以再加。
+
+---
+
 ## ⏱ 关于签到时刻与「被网站检测」
 
 如果你担心"每天同一时间签到会被识别成机器人"，这里是对应的实测数据。
