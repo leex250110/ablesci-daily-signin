@@ -1,30 +1,59 @@
-name: AbleSci Daily Sign-In
+name: AbleSci 每日签到
 
 on:
   schedule:
-    # Runs at 08:00 CST (00:00 UTC) every day
+    # 每天 00:00 UTC = 北京时间 08:00
+    # 注意：GitHub 免费版 cron 不保证准点，高峰期可能延迟几分钟到半小时。
     - cron: "0 0 * * *"
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch: # 允许在网页上手动触发
+
+# 最小权限：本任务只需要读仓库
+permissions:
+  contents: read
+
+# 避免手动触发和定时触发撞在一起
+concurrency:
+  group: ablesci-signin
+  cancel-in-progress: false
 
 jobs:
   signin:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # 想加人只需在这里补两行，并在仓库 Secrets 里加对应的值。
+    # 没配置的槽位会是空字符串，脚本会自动跳过。
+    env:
+      TZ: Asia/Shanghai
+      ABLESCI_1_EMAIL: ${{ secrets.ABLESCI_1_EMAIL }}
+      ABLESCI_1_PASSWORD: ${{ secrets.ABLESCI_1_PASSWORD }}
+      ABLESCI_2_EMAIL: ${{ secrets.ABLESCI_2_EMAIL }}
+      ABLESCI_2_PASSWORD: ${{ secrets.ABLESCI_2_PASSWORD }}
+      ABLESCI_3_EMAIL: ${{ secrets.ABLESCI_3_EMAIL }}
+      ABLESCI_3_PASSWORD: ${{ secrets.ABLESCI_3_PASSWORD }}
+      ABLESCI_4_EMAIL: ${{ secrets.ABLESCI_4_EMAIL }}
+      ABLESCI_4_PASSWORD: ${{ secrets.ABLESCI_4_PASSWORD }}
+      ABLESCI_5_EMAIL: ${{ secrets.ABLESCI_5_EMAIL }}
+      ABLESCI_5_PASSWORD: ${{ secrets.ABLESCI_5_PASSWORD }}
+      # 兼容旧的单账号写法（可留空）
+      ABLESCI_EMAIL: ${{ secrets.ABLESCI_EMAIL }}
+      ABLESCI_PASSWORD: ${{ secrets.ABLESCI_PASSWORD }}
+
     steps:
-      - name: Checkout repository
+      - name: 拉取仓库
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 安装 Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+          cache: pip
 
-      - name: Install dependencies
-        run: |
-          pip install requests
+      - name: 安装依赖
+        run: pip install -r requirements.txt
 
-      - name: Run sign-in script
-        env:
-          ABLESCI_EMAIL: ${{ secrets.ABLESCI_EMAIL }}
-          ABLESCI_PASSWORD: ${{ secrets.ABLESCI_PASSWORD }}
-        run: |
-          python ablesci_signin.py
+      - name: 站点自检（确认 CSRF 抓取逻辑没被改版打断）
+        run: python ablesci_signin.py --check
+
+      - name: 执行签到
+        run: python ablesci_signin.py

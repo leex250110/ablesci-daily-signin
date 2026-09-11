@@ -1,0 +1,10 @@
+# 统一使用 LF 行尾：本项目的 workflow 跑在 ubuntu-latest 上，
+# 避免 Windows 下编辑时把 CRLF 提交进仓库。
+* text=auto
+
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
