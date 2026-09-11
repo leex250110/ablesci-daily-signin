@@ -23,6 +23,7 @@ AbleSci.com 每日自动签到 —— 多账号版
 from __future__ import annotations
 
 import os
+import random
 import re
 import sys
 import time
@@ -38,6 +39,41 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+# 让请求头尽可能贴近真实浏览器。不是决定性的（数据中心 IP 才是最大特征），
+# 但能减少一些廉价的风控特征命中。注意刻意不覆盖 Accept-Encoding，
+# 交给 requests 依据已安装的解码库自行决定，否则可能收到无法解压的响应。
+DOC_HEADERS = {
+    "User-Agent": UA,
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "sec-ch-ua": '"Chromium";v="126", "Not:A-Brand";v="24"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+}
+
+# 站点自己的 AJAX 请求头（登录、签到接口都走 XHR）
+XHR_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "X-Requested-With": "XMLHttpRequest",
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "sec-ch-ua": '"Chromium";v="126", "Not:A-Brand";v="24"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+}
 
 MAX_ACCOUNT_SLOTS = 20
 TIMEOUT = 25
@@ -177,11 +213,13 @@ def collect_accounts() -> list[Account]:
 class AbleSciClient:
     def __init__(self) -> None:
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": UA})
+        self.session.headers.update(DOC_HEADERS)
 
     def fresh_csrf(self) -> str:
         """每次都重新 GET 登录页并抓取当次有效的 token。"""
-        resp = self.session.get(LOGIN_URL, timeout=TIMEOUT)
+        resp = self.session.get(
+            LOGIN_URL, headers={"Referer": BASE + "/"}, timeout=TIMEOUT
+        )
         resp.raise_for_status()
         token = find_first(CSRF_PATTERNS, resp.text)
         if not token:
@@ -193,29 +231,25 @@ class AbleSciClient:
 
     def login(self, email: str, password: str) -> dict:
         csrf = self.fresh_csrf()
+        headers = dict(XHR_HEADERS)
+        headers["Referer"] = LOGIN_URL
+        headers["Origin"] = BASE
         resp = self.session.post(
             LOGIN_URL,
             data={"_csrf": csrf, "email": email, "password": password},
-            headers={
-                "X-Requested-With": "XMLHttpRequest",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "Referer": LOGIN_URL,
-                "Origin": BASE,
-            },
+            headers=headers,
             timeout=TIMEOUT,
         )
         return parse_json(resp)
 
     def sync(self) -> None:
         """登录后访问首页，让服务端会话状态落定。"""
-        self.session.get(BASE + "/", timeout=TIMEOUT)
+        self.session.get(BASE + "/", headers={"Referer": LOGIN_URL}, timeout=TIMEOUT)
 
     def sign(self) -> dict:
-        resp = self.session.get(
-            SIGN_URL,
-            headers={"X-Requested-With": "XMLHttpRequest", "Referer": BASE + "/"},
-            timeout=TIMEOUT,
-        )
+        headers = dict(XHR_HEADERS)
+        headers["Referer"] = BASE + "/"
+        resp = self.session.get(SIGN_URL, headers=headers, timeout=TIMEOUT)
         return parse_json(resp)
 
     def stats(self) -> tuple[str | None, str | None]:
@@ -359,6 +393,38 @@ def check_site() -> int:
     return 0
 
 
+def apply_jitter() -> None:
+    """定时触发时随机延迟，打散每天几乎相同的签到时刻。
+
+    实测：原 cron(00:00 UTC) 的真实执行时刻会成段稳定在同一偏移上，
+    例如连续 12 天落在 01:35~01:45 之间，相差不超过 10 分钟。
+    这种规律性本身是个可被识别的特征，所以在 GitHub 自身漂移之上
+    再叠加一层随机。
+
+    只对 schedule 触发生效，手动 Run workflow 不会白白空等。
+    窗口由 ABLESCI_JITTER_MAX 控制（秒），未设置或为 0 则关闭。
+    """
+    raw = read_env("ABLESCI_JITTER_MAX", strip_whitespace=True)
+    try:
+        jitter_max = int(raw or 0)
+    except ValueError:
+        print(f"⚠️  ABLESCI_JITTER_MAX 不是整数（{raw!r}），已忽略")
+        return
+    if jitter_max <= 0:
+        return
+
+    if os.environ.get("GITHUB_EVENT_NAME") != "schedule":
+        print("（非定时触发，跳过随机延迟，以免手动运行空等）")
+        return
+
+    wait = random.randint(0, jitter_max)
+    print(
+        f"⏱  随机延迟 {wait // 60} 分 {wait % 60} 秒后开始签到"
+        f"（窗口 0~{jitter_max // 60} 分钟，用于打散每日签到时刻）"
+    )
+    time.sleep(wait)
+
+
 # ------------------------------------------------------------------ main
 def main() -> int:
     if "--check" in sys.argv:
@@ -375,6 +441,8 @@ def main() -> int:
     for acc in accounts:
         print(f"  - {acc.display}")
 
+    apply_jitter()
+
     outcomes: list[Outcome] = []
     for idx, account in enumerate(accounts, 1):
         print(f"\n[{idx}/{len(accounts)}] 处理 {account.display} ……")
@@ -382,7 +450,10 @@ def main() -> int:
         print(f"   → {STATUS_ICON.get(outcome.status, '?')} {outcome.message}")
         outcomes.append(outcome)
         if idx < len(accounts):
-            time.sleep(2)  # 温和一点，避免触发风控
+            # 账号之间随机间隔，比固定值更像真人、也更温和
+            gap = random.uniform(4, 15)
+            print(f"   （等待 {gap:.1f} 秒后处理下一个账号）")
+            time.sleep(gap)
 
     print_report(outcomes)
     write_step_summary(outcomes)

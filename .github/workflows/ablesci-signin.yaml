@@ -2,8 +2,10 @@ name: AbleSci 每日签到
 
 on:
   schedule:
-    # 每天 00:00 UTC = 北京时间 08:00
-    # 注意：GitHub 免费版 cron 不保证准点，高峰期可能延迟几分钟到半小时。
+    # 每天 00:00 UTC = 北京时间 08:00 触发。
+    # 注意：这只是"触发时刻"，不是"签到时刻"。实测 GitHub 免费版会把它
+    # 推迟 1.6 ~ 10.9 小时不等，且成段稳定（连续多天落在同一偏移上）。
+    # 脚本内的 ABLESCI_JITTER_MAX 会在此基础上再叠加随机延迟。
     - cron: "0 0 * * *"
   workflow_dispatch: # 允许在网页上手动触发
 
@@ -19,12 +21,16 @@ concurrency:
 jobs:
   signin:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 需要容纳 ABLESCI_JITTER_MAX 的随机延迟（默认最多 25 分钟）
+    timeout-minutes: 60
 
     # 想加人只需在这里补两行，并在仓库 Secrets 里加对应的值。
     # 没配置的槽位会是空字符串，脚本会自动跳过。
     env:
       TZ: Asia/Shanghai
+      # 定时触发的随机延迟窗口（秒）。1500 = 最多等 25 分钟。
+      # 仅对 schedule 生效，手动 Run workflow 不会空等。设为 0 可关闭。
+      ABLESCI_JITTER_MAX: "1500"
       ABLESCI_1_EMAIL: ${{ secrets.ABLESCI_1_EMAIL }}
       ABLESCI_1_PASSWORD: ${{ secrets.ABLESCI_1_PASSWORD }}
       ABLESCI_2_EMAIL: ${{ secrets.ABLESCI_2_EMAIL }}
